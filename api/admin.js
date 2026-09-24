@@ -1,6 +1,6 @@
 // API админ-панели. Один эндпоинт: /api/admin/<action> (см. rewrites в vercel.json).
 import { getMenu, mutate, getHistory, getHistoryDocs, restoreHistory, hasRedis, isVercel } from '../lib/store.js';
-import { STAFF_OPS, collectMediaUrls, publicView } from '../lib/menu.js';
+import { STAFF_OPS, collectMediaUrls, publicView, FONTS } from '../lib/menu.js';
 import { checkPassword, makeCookie, clearCookie, getSession, authConfigured, loginAllowed, loginFailed, loginOk } from '../lib/auth.js';
 import { hasBlob, clientToken, listBlobs, deleteBlobs, isBlobUrl } from '../lib/blob.js';
 import { promises as fs } from 'node:fs';
@@ -40,7 +40,7 @@ export async function GET(req) {
 
   if (a === 'menu') {
     const doc = await getMenu({ fresh: true });
-    return json({ doc, role: s.role, status: status() });
+    return json({ doc, role: s.role, status: status(), fonts: FONTS });
   }
   if (a === 'preview') {
     const doc = await getMenu({ fresh: true });

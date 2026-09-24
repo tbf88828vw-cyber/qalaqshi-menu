@@ -45,6 +45,16 @@ const nm = (o) => (o && (o.ru || o.en || o.ka)) || '—';
 const money = (n) => (n == null || n === '' ? '' : (Number.isInteger(+n) ? String(+n) : (+n).toFixed(2)) + ' ₾');
 const catById = (id) => state.doc.categories.find((c) => c.id === id);
 const itemById = (id) => state.doc.items.find((x) => x.id === id);
+// где позиция окажется на сайте — та же логика, что и на самом сайте
+const isPortrait = (m) => m && m.type === 'image' && m.w && m.h && m.h / m.w >= 1.25;
+function placeOf(it) {
+  const c = catById(it.cat);
+  if (!c || c.section === 'bar') return 'list';
+  if (it.place === 'big') return 'big';
+  if (it.place === 'compact') return 'compact';
+  if (c.display === 'compact') return 'compact';
+  return it.media && (it.media.type === 'video' || isPortrait(it.media)) ? 'big' : 'compact';
+}
 const stopped = (it) => !!it.stop && (!it.stop.until || Date.parse(it.stop.until) > Date.now());
 
 // ───────────────────────── API ─────────────────────────
@@ -169,7 +179,7 @@ function renderLogin(msg = '') {
 
 async function loadAll() {
   const r = await api('menu');
-  state.doc = r.doc; state.role = r.role; state.status = r.status;
+  state.doc = r.doc; state.role = r.role; state.status = r.status; state.fonts = r.fonts;
   if (!isOwner()) state.tab = 'stop';
   renderShell();
 }
@@ -330,7 +340,7 @@ function renderMenu(v, warn) {
     return `<div class="row tap" data-cat="${c.id}">
       <div class="order"><button class="icon-btn" data-mv="${c.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="Выше">${icon('up')}</button><button class="icon-btn" data-mv="${c.id}" data-dir="1" ${i === arr.length - 1 ? 'disabled' : ''} aria-label="Ниже">${icon('down')}</button></div>
       <div class="row-main"><div class="row-title">${esc(nm(c.name))}</div>
-        <div class="row-sub"><span>${items.length} поз.</span>${c.section === 'kitchen' ? `<span class="tag">${c.display === 'video' ? 'видео-карусель' : 'компактная лента'}</span>` : ''}${vid ? `<span class="tag ok">${vid} видео</span>` : ''}${st ? `<span class="tag stop">${st} на стопе</span>` : ''}${c.hidden ? '<span class="tag hidden">скрыта</span>' : ''}</div></div>
+        <div class="row-sub"><span>${items.length} поз.</span>${c.section === 'kitchen' ? `<span class="tag">${items.filter((x) => placeOf(x) === 'big').length} в карусели</span><span class="tag">${c.rail === false ? 'лента скрыта' : items.filter((x) => placeOf(x) === 'compact').length + ' в ленте'}</span>` : ''}${vid ? `<span class="tag ok">${vid} видео</span>` : ''}${st ? `<span class="tag stop">${st} на стопе</span>` : ''}${c.hidden ? '<span class="tag hidden">скрыта</span>' : ''}</div></div>
       ${icon('chev', 'chev')}
     </div>`;
   };
@@ -374,7 +384,7 @@ function renderCategory(v) {
       <div class="order"><button class="icon-btn" data-mv="${it.id}" data-dir="-1" ${i === 0 ? 'disabled' : ''}>${icon('up')}</button><button class="icon-btn" data-mv="${it.id}" data-dir="1" ${i === items.length - 1 ? 'disabled' : ''}>${icon('down')}</button></div>
       ${thumbHtml(it.media)}
       <div class="row-main"><div class="row-title">${esc(nm(it.name))}</div>
-        <div class="row-sub"><span class="row-price">${money(it.price)}</span>${it.portion ? `<span>· ${esc(it.portion)}</span>` : ''}${off ? `<span class="tag stop">${esc(stopLabel(it))}</span>` : ''}${it.hidden ? '<span class="tag hidden">скрыто</span>' : ''}${c.section === 'kitchen' && !it.desc.ru && !it.ingr.ru ? '<span class="tag">нет описания</span>' : ''}${it.media?.src?.includes('postershop') ? '<span class="tag">фото Poster</span>' : ''}</div></div>
+        <div class="row-sub"><span class="row-price">${money(it.price)}</span>${it.portion ? `<span>· ${esc(it.portion)}</span>` : ''}${off ? `<span class="tag stop">${esc(stopLabel(it))}</span>` : ''}${it.hidden ? '<span class="tag hidden">скрыто</span>' : ''}${c.section === 'kitchen' ? `<span class="tag ${placeOf(it) === 'big' ? 'gold' : ''}">${placeOf(it) === 'big' ? 'карусель' : c.rail === false ? 'лента скрыта' : 'лента'}</span>` : ''}${c.section === 'kitchen' && !it.desc.ru && !it.ingr.ru ? '<span class="tag">нет описания</span>' : ''}${it.media?.src?.includes('postershop') ? '<span class="tag">фото Poster</span>' : ''}</div></div>
       ${icon('chev', 'chev')}
     </div>`;
   });
@@ -423,8 +433,10 @@ const sw = (name, checked, label, sub = '') => `<label class="card-row"><span cl
 // ───────────────────────── МЕДИА ─────────────────────────
 function mediaPreview(m) {
   if (!m) return `<div class="media-prev">${icon('photo')}</div>`;
-  if (m.type === 'video') return `<div class="media-prev" style="background-image:url('${esc(m.poster || '')}')"><video src="${esc(m.srcLow || m.src)}" muted loop playsinline autoplay poster="${esc(m.poster || '')}"></video></div>`;
-  return `<div class="media-prev photo" style="background-image:url('${esc(m.blur || '')}')"><img src="${esc(m.src)}" alt=""></div>`;
+  const f = m.focus || { x: 0.5, y: 0.6 };
+  const dot = `<span class="focus-dot" style="left:${f.x * 100}%;top:${f.y * 100}%"></span>`;
+  if (m.type === 'video') return `<div class="media-prev pickable" data-kind="video" style="background-image:url('${esc(m.poster || '')}')"><video src="${esc(m.srcLow || m.src)}" muted loop playsinline autoplay poster="${esc(m.poster || '')}"></video>${dot}</div>`;
+  return `<div class="media-prev photo pickable" data-kind="photo" style="background-image:url('${esc(m.blur || '')}')"><div class="photo-fit" style="aspect-ratio:${m.w || 4} / ${m.h || 3}"><img src="${esc(m.srcLow || m.src)}" alt="">${dot}</div></div>`;
 }
 function mediaBlock(m) {
   return `<div class="card"><div class="media-box">
@@ -438,7 +450,7 @@ function mediaBlock(m) {
         <div class="progress" hidden><div class="progress-bar"><i></i></div><div class="progress-label"><span data-plabel></span><span data-ppct></span></div></div>
       </div>
     </div>
-    <div class="hint">Снимайте вертикально (9:16), 5–10 секунд. Видео автоматически сжимается без потери качества в две версии — для быстрого и медленного интернета.</div>
+    <div class="hint">Снимайте вертикально (9:16), 5–10 секунд — прямо с iPhone, в любом формате. Видео автоматически превращается в три версии (Full HD, HD и лёгкую), которые играют на всех телефонах. <b>Точка на превью</b> — где блюдо: сайт кадрирует по ней и пускает от неё пар. Сдвинуть — нажмите на блюдо на превью.</div>
   </div>`;
 }
 function wireMedia(root, getMedia, setMedia) {
@@ -470,6 +482,16 @@ function wireMedia(root, getMedia, setMedia) {
     }
   }));
   $('[data-rmmedia]', root).onclick = () => { setMedia(null); refresh(); };
+  // ручная точка блюда: нажатие на превью
+  $('[data-prev]', root).addEventListener('click', (e) => {
+    const m = getMedia(); if (!m) return;
+    const box = e.target.closest('.photo-fit') || e.target.closest('.media-prev');
+    if (!box) return;
+    const r = box.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    setMedia({ ...m, focus: { x: Math.round(x * 1000) / 1000, y: Math.round(y * 1000) / 1000, s: m.focus?.s || 0.5 } });
+    const d = $('.focus-dot', root); if (d) { d.style.left = x * 100 + '%'; d.style.top = y * 100 + '%'; }
+  });
 }
 
 // ── обработка видео в браузере ──
@@ -477,62 +499,138 @@ let MB = null;
 async function mediabunny() { return MB || (MB = await import('/admin/vendor/mediabunny.mjs')); }
 const MAX_SECONDS = 15;
 const CODEC = window.__qaCodec || 'avc'; // H.264 — единственный кодек, который играют все телефоны
+// три версии: 1080p для быстрого интернета и чётких экранов, 720p — основная, 480p — для слабой связи
 const RENDITIONS = [
-  { key: 'src', w: 720, h: 1280, bitrate: 2_200_000, label: 'Качественная версия' },
-  { key: 'srcLow', w: 480, h: 854, bitrate: 850_000, label: 'Лёгкая версия для слабого интернета' },
+  { key: 'srcHi', w: 1080, h: 1920, bitrate: 5_000_000, label: 'Версия Full HD', file: '1080' },
+  { key: 'src', w: 720, h: 1280, bitrate: 2_800_000, label: 'Основная версия', file: '720' },
+  { key: 'srcLow', w: 480, h: 854, bitrate: 1_100_000, label: 'Лёгкая версия для слабого интернета', file: '480' },
 ];
 
 async function uploadVideo(file, setP) {
   if (!('VideoEncoder' in window)) throw new Error('Этот браузер не умеет сжимать видео. Откройте админку в Safari (iPhone/Mac) или Chrome.');
   setP('Подготовка…', 0);
-  const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, Quality, canEncodeVideo } = await mediabunny();
-  const probe = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-  const vt = await probe.getPrimaryVideoTrack();
-  if (!vt) throw new Error('В файле нет видео');
-  if (!(await vt.canDecode())) throw new Error('Браузер не может прочитать это видео. Попробуйте Safari или снимите в формате «Наиболее совместимый» (Настройки → Камера → Форматы).');
-  const dw = await vt.getDisplayWidth(), dh = await vt.getDisplayHeight();
-  const duration = await probe.computeDuration();
-  if (!(await canEncodeVideo(CODEC, { width: 720, height: 1280, bitrate: 2_200_000 }))) throw new Error('Браузер не поддерживает кодирование H.264. Используйте Safari или Chrome.');
-  // обрезаем центр под вертикальный формат 9:16 — как на карточке сайта
+  const mb = await mediabunny();
+  if (!(await mb.canEncodeVideo(CODEC, { width: 720, height: 1280, bitrate: 2_200_000 }))) throw new Error('Браузер не поддерживает кодирование H.264. Используйте Safari или Chrome.');
+  let out;
+  try {
+    if (window.__qaForceFallback) throw new Error('test');
+    out = await transcodeDirect(mb, file, setP);
+  } catch (e) {
+    // Видео HDR / Dolby Vision с iPhone и некоторые форматы WebCodecs не читает напрямую —
+    // тогда кадры берём из обычного видеоплеера браузера (он умеет всё, что умеет показывать).
+    console.warn('direct transcode failed, fallback', e);
+    out = await transcodeViaPlayer(mb, file, setP);
+  }
+  // если исходник меньше 720p — основной версией становится самая большая из получившихся
+  if (!out.src) { out.src = out.srcHi || out.srcLow; delete out.srcHi; }
+  setP('Обложка и поиск блюда в кадре…', 0.72);
+  const { poster, blur, focus, w, h } = await posterFromVideo(out.srcHi || out.src);
+  const base = 'media/' + slug(file.name) + '-' + Date.now().toString(36);
+  const files = [];
+  for (const r of RENDITIONS) if (out[r.key]) files.push([out[r.key], base + '-' + r.file + '.mp4', 'video/mp4', r.key]);
+  files.push([poster, base + '-poster.' + (poster.type === 'image/webp' ? 'webp' : 'jpg'), poster.type, 'poster']);
+  const total = files.reduce((s, f) => s + f[0].size, 0);
+  let doneBytes = 0;
+  const media = { type: 'video', blur, w: 720, h: 1280, dur: out.dur, focus, bytes: {} };
+  for (const [blob, path, type, key] of files) {
+    media[key] = await putFile(blob, path, type, (loaded) => setP(`Загрузка ${fmtMB(doneBytes + loaded)} из ${fmtMB(total)}…`, 0.74 + ((doneBytes + loaded) / total) * 0.26));
+    if (key !== 'poster') media.bytes[key] = blob.size;
+    doneBytes += blob.size;
+  }
+  return media;
+}
+
+function cropFor(dw, dh) {
+  // центр кадра под вертикальный формат 9:16 — как карточка на сайте
   const ar = 9 / 16;
   let cw = dw, ch = dh;
   if (dw / dh > ar) cw = Math.round(dh * ar); else ch = Math.round(dw / ar);
   cw -= cw % 2; ch -= ch % 2;
-  const crop = { left: Math.round((dw - cw) / 2), top: Math.round((dh - ch) / 2), width: cw, height: ch };
-  const end = Math.min(duration, MAX_SECONDS);
-  const out = {};
-  for (const [ri, r] of RENDITIONS.entries()) {
+  return { left: Math.round((dw - cw) / 2), top: Math.round((dh - ch) / 2), width: cw, height: ch };
+}
+function sizesFor(crop) {
+  // не растягиваем маленькие исходники и не делаем одинаковые копии
+  const seen = new Set();
+  return RENDITIONS.map((r) => {
+    const w = Math.min(r.w, crop.width - (crop.width % 2));
+    return { ...r, w, h: Math.round((w / 9) * 16 / 2) * 2 };
+  }).filter((r) => { if (seen.has(r.w) || (r.key === 'srcHi' && r.w < 900)) return false; seen.add(r.w); return true; });
+}
+
+async function transcodeDirect(mb, file, setP) {
+  const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, Quality } = mb;
+  const probe = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  const vt = await probe.getPrimaryVideoTrack();
+  if (!vt) throw new Error('В файле нет видео');
+  if (!(await vt.canDecode())) throw new Error('cannot decode');
+  const crop = cropFor(await vt.getDisplayWidth(), await vt.getDisplayHeight());
+  const end = Math.min(await probe.computeDuration(), MAX_SECONDS);
+  const sizes = sizesFor(crop);
+  const out = { dur: Math.round(end * 10) / 10 };
+  for (const [ri, r] of sizes.entries()) {
     const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
     const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
-    const w = Math.min(r.w, cw - (cw % 2)), hh = Math.round((w / 9) * 16 / 2) * 2;
     const conv = await Conversion.init({
       input, output,
       trim: { start: 0, end },
-      video: { crop, width: w, height: hh, fit: 'fill', frameRate: 30, codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2, forceTranscode: true },
+      video: { crop, width: r.w, height: r.h, fit: 'fill', frameRate: 30, codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2, forceTranscode: true },
       audio: { discard: true },
     });
-    if (!conv.isValid) throw new Error('Не удалось подготовить видео: ' + conv.discardedTracks.map((d) => d.reason).join(', '));
-    conv.onProgress = (p) => setP(`${r.label}…`, (ri + p) / RENDITIONS.length * 0.7);
+    if (!conv.isValid) throw new Error('invalid conversion');
+    conv.onProgress = (p) => setP(`${r.label}…`, (ri + p) / sizes.length * 0.7);
     await conv.execute();
     out[r.key] = new Blob([output.target.buffer], { type: 'video/mp4' });
-    if (ri === 0) { out.w = w; out.h = hh; }
   }
-  setP('Обложка…', 0.72);
-  const { poster, blur } = await posterFromVideo(out.src);
-  const base = 'media/' + slug(file.name) + '-' + Date.now().toString(36);
-  const files = [
-    [out.src, base + '-720.mp4', 'video/mp4', 'src'],
-    [out.srcLow, base + '-480.mp4', 'video/mp4', 'srcLow'],
-    [poster, base + '-poster.' + (poster.type === 'image/webp' ? 'webp' : 'jpg'), poster.type, 'poster'],
-  ];
-  const total = files.reduce((s, f) => s + f[0].size, 0);
-  let doneBytes = 0;
-  const media = { type: 'video', blur, w: out.w, h: out.h, dur: Math.round(end * 10) / 10 };
-  for (const [blob, path, type, key] of files) {
-    media[key] = await putFile(blob, path, type, (loaded) => setP(`Загрузка ${fmtMB(doneBytes + loaded)} из ${fmtMB(total)}…`, 0.74 + ((doneBytes + loaded) / total) * 0.26));
-    doneBytes += blob.size;
+  return out;
+}
+
+async function transcodeViaPlayer(mb, file, setP) {
+  const { Output, BufferTarget, Mp4OutputFormat, CanvasSource, Quality } = mb;
+  const url = URL.createObjectURL(file);
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  try {
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('Браузер не может открыть это видео. Попробуйте другой файл или снимите в формате «Наиболее совместимый» (Настройки → Камера → Форматы).')); setTimeout(() => rej(new Error('Видео не открывается')), 20000); });
+    const crop = cropFor(v.videoWidth, v.videoHeight);
+    const end = Math.min(v.duration || MAX_SECONDS, MAX_SECONDS);
+    const sizes = sizesFor(crop);
+    const tracks = [];
+    for (const r of sizes) {
+      const c = document.createElement('canvas'); c.width = r.w; c.height = r.h;
+      const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+      const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+      const source = new CanvasSource(c, { codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2 });
+      output.addVideoTrack(source, { frameRate: 30 });
+      await output.start();
+      tracks.push({ r, ctx, output, source });
+    }
+    const fps = 30, step = 1 / fps, frames = Math.floor(end * fps);
+    const seek = (t) => new Promise((res) => {
+      const done = () => { v.removeEventListener('seeked', done); res(); };
+      v.addEventListener('seeked', done);
+      v.currentTime = t;
+      setTimeout(done, 1500);
+    });
+    for (let i = 0; i < frames; i++) {
+      const t = i * step;
+      await seek(Math.min(t + 0.001, v.duration - 0.01));
+      for (const k of tracks) {
+        k.ctx.drawImage(v, crop.left, crop.top, crop.width, crop.height, 0, 0, k.r.w, k.r.h);
+        await k.source.add(t, step);
+      }
+      if (i % 5 === 0) setP('Сжимаем видео…', (i / frames) * 0.7);
+    }
+    const out = { dur: Math.round(end * 10) / 10 };
+    for (const k of tracks) {
+      k.source.close();
+      await k.output.finalize();
+      out[k.r.key] = new Blob([k.output.target.buffer], { type: 'video/mp4' });
+    }
+    return out;
+  } finally {
+    v.removeAttribute('src'); v.load();
+    URL.revokeObjectURL(url);
   }
-  return media;
 }
 
 async function posterFromVideo(blob) {
@@ -543,13 +641,14 @@ async function posterFromVideo(blob) {
   await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('Не удалось прочитать видео')); });
   v.currentTime = 0.001;
   await new Promise((res) => { v.onseeked = res; setTimeout(res, 800); });
-  const poster = await canvasBlob(v, 450, 800, 0.66);
+  const poster = await canvasBlob(v, 450, 800, 0.72);
   const blur = await tinyBlur(v);
+  const focus = detectFocus(v);
   URL.revokeObjectURL(url);
-  return { poster, blur };
+  return { poster, blur, focus };
 }
 
-async function uploadImage(fileOrBlob, setP, { maxSide = 1280, name = 'photo' } = {}) {
+async function uploadImage(fileOrBlob, setP, { maxSide = 1600, name = 'photo' } = {}) {
   setP && setP('Сжимаем фото…', 0.1);
   let bmp;
   try { bmp = await createImageBitmap(fileOrBlob, { imageOrientation: 'from-image' }); } catch {
@@ -558,11 +657,76 @@ async function uploadImage(fileOrBlob, setP, { maxSide = 1280, name = 'photo' } 
   const w0 = bmp.width, h0 = bmp.height;
   const k = Math.min(1, maxSide / Math.max(w0, h0));
   const w = Math.round(w0 * k), h = Math.round(h0 * k);
-  const main = await canvasBlob(bmp, w, h, 0.82);
+  const main = await canvasBlob(bmp, w, h, 0.84);
+  // уменьшенная копия для компактных карточек — грузится мгновенно
+  const k2 = Math.min(1, 640 / Math.max(w0, h0));
+  const small = await canvasBlob(bmp, Math.round(w0 * k2), Math.round(h0 * k2), 0.8);
   const blur = await tinyBlur(bmp);
+  const focus = detectFocus(bmp);
   const base = 'media/' + slug(fileOrBlob.name || name) + '-' + Date.now().toString(36);
-  const src = await putFile(main, base + '.' + (main.type === 'image/webp' ? 'webp' : 'jpg'), main.type, (l) => setP && setP('Загрузка…', 0.3 + (l / main.size) * 0.7));
-  return { type: 'image', src, blur, w, h };
+  const ext = (b) => (b.type === 'image/webp' ? 'webp' : 'jpg');
+  const total = main.size + small.size;
+  const src = await putFile(main, base + '.' + ext(main), main.type, (l) => setP && setP('Загрузка…', 0.3 + (l / total) * 0.7));
+  const srcLow = await putFile(small, base + '-s.' + ext(small), small.type, (l) => setP && setP('Загрузка…', 0.3 + ((main.size + l) / total) * 0.7));
+  return { type: 'image', src, srcLow, blur, w, h, focus };
+}
+
+/** Где на кадре блюдо: цветовой контраст с фоном + локальный контраст + лёгкий приоритет центра. */
+function detectFocus(src) {
+  try {
+    const sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+    const W = 72, H = Math.max(24, Math.round((W * sh) / sw));
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(src, 0, 0, W, H);
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const lab = new Float32Array(W * H * 3);
+    const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+    const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    let mL = 0, mA = 0, mB = 0;
+    for (let i = 0; i < W * H; i++) {
+      const r = lin(px[i * 4]), g = lin(px[i * 4 + 1]), b = lin(px[i * 4 + 2]);
+      const x = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.9505), y = f(0.2126 * r + 0.7152 * g + 0.0722 * b), z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.089);
+      const L = 116 * y - 16, A = 500 * (x - y), B = 200 * (y - z);
+      lab[i * 3] = L; lab[i * 3 + 1] = A; lab[i * 3 + 2] = B; mL += L; mA += A; mB += B;
+    }
+    mL /= W * H; mA /= W * H; mB /= W * H;
+    // локальное среднее (размытие окном 9×9) для контраста «центр — окружение»
+    const R = 4, loc = new Float32Array(W * H * 3);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let n = 0, s0 = 0, s1 = 0, s2 = 0;
+      for (let dy = -R; dy <= R; dy += 2) for (let dx = -R; dx <= R; dx += 2) {
+        const yy = Math.min(H - 1, Math.max(0, y + dy)), xx = Math.min(W - 1, Math.max(0, x + dx)), j = (yy * W + xx) * 3;
+        s0 += lab[j]; s1 += lab[j + 1]; s2 += lab[j + 2]; n++;
+      }
+      const i = (y * W + x) * 3; loc[i] = s0 / n; loc[i + 1] = s1 / n; loc[i + 2] = s2 / n;
+    }
+    const S = new Float32Array(W * H);
+    let mx = 0;
+    for (let i = 0; i < W * H; i++) {
+      const j = i * 3;
+      const g1 = Math.hypot(lab[j] - mL, lab[j + 1] - mA, lab[j + 2] - mB);
+      const g2 = Math.hypot(lab[j] - loc[j], lab[j + 1] - loc[j + 1], lab[j + 2] - loc[j + 2]);
+      S[i] = g1 * 0.6 + g2 * 0.4; if (S[i] > mx) mx = S[i];
+    }
+    const vals = [];
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const X = (x + 0.5) / W, Y = (y + 0.5) / H;
+      const i = y * W + x;
+      S[i] = (S[i] / (mx || 1)) * Math.exp(-((X - 0.5) ** 2 / 0.08 + (Y - 0.58) ** 2 / 0.12));
+      vals.push(S[i]);
+    }
+    vals.sort((a, b) => a - b);
+    const thr = vals[Math.floor(vals.length * 0.85)];
+    let sw8 = 0, cx = 0, cy = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const v = S[y * W + x]; if (v >= thr) { sw8 += v; cx += v * (x + 0.5) / W; cy += v * (y + 0.5) / H; } }
+    cx /= sw8; cy /= sw8;
+    let vx = 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const v = S[y * W + x]; if (v >= thr) vx += v * (((x + 0.5) / W - cx) ** 2 + ((y + 0.5) / H - cy) ** 2); }
+    const s = Math.min(0.9, Math.max(0.2, Math.sqrt(vx / sw8) * 3));
+    const r3 = (n) => Math.round(n * 1000) / 1000;
+    return { x: r3(cx), y: r3(cy), s: r3(s) };
+  } catch { return { x: 0.5, y: 0.6, s: 0.5 }; }
 }
 
 function drawCover(src, w, h, sw = src.videoWidth || src.width, sh = src.videoHeight || src.height) {
@@ -608,8 +772,6 @@ async function putFile(blob, pathname, contentType, onProgress) {
           x.setRequestHeader('x-vercel-blob-store-id', tk.storeId);
           x.setRequestHeader('x-vercel-blob-access', 'public');
           x.setRequestHeader('x-content-type', contentType);
-          x.setRequestHeader('x-add-random-suffix', '1');
-          x.setRequestHeader('x-cache-control-max-age', '31536000');
           x.setRequestHeader('x-content-length', String(blob.size));
           x.setRequestHeader('x-api-blob-request-id', `${tk.storeId}:${Date.now()}:${Math.random().toString(16).slice(2)}`);
           x.setRequestHeader('x-api-blob-request-attempt', String(attempt - 1));
@@ -655,6 +817,9 @@ function openItemEditor(id, catId) {
       ${kitchen ? i18nField('desc', 'Описание', it.desc, { textarea: true, placeholder: 'Пара предложений о блюде' }) : ''}
       ${kitchen ? i18nField('ingr', 'Состав', it.ingr, { textarea: true, placeholder: 'Говядина · лук · кинза · специи', hint: 'Разделяйте ингредиенты точкой «·» или запятой.' }) : ''}
       <div class="field"><label>Категория</label><select class="select" name="cat">${cats.map((c) => `<option value="${c.id}" ${c.id === it.cat ? 'selected' : ''}>${c.section === 'bar' ? 'Бар · ' : ''}${esc(nm(c.name))}</option>`).join('')}</select></div>
+      ${kitchen ? `<div class="field"><label>Где показывать на сайте</label>
+        <div class="seg" data-place>${[['auto', 'Авто'], ['big', 'Большая карусель'], ['compact', 'Компактная лента']].map(([k, l]) => `<button type="button" data-v="${k}" class="${(it.place || 'auto') === k ? 'active' : ''}">${l}</button>`).join('')}</div>
+        <div class="hint" data-place-hint></div></div>` : ''}
       ${kitchen ? `<div class="field"><label>Метка на карточке</label><div class="chips" data-badges>${Object.entries(BADGES).map(([k, l]) => `<button type="button" class="chip ${it.badges.includes(k) ? 'on' : ''}" data-b="${k}">${l}</button>`).join('')}</div><div class="hint">На карточке показывается первая выбранная метка, в подробностях — все.</div></div>` : ''}
       <div class="card">
         ${sw('available', !stopped(it), 'В наличии', 'Выключите, чтобы поставить на стоп')}
@@ -669,7 +834,22 @@ function openItemEditor(id, catId) {
   const form = $('form', root);
   wireLangTabs(root);
   form.addEventListener('input', () => { dirty = true; });
-  if (kitchen) wireMedia(root, () => it.media, (m) => { it.media = m; dirty = true; });
+  if (kitchen) wireMedia(root, () => it.media, (m) => { it.media = m; dirty = true; placeHint(); });
+  const placeHint = () => {
+    const el = $('[data-place-hint]', root); if (!el) return;
+    const c2 = catById($('form', root).elements.cat.value) || cat;
+    const where = placeOf({ ...it, cat: c2.id });
+    el.innerHTML = (where === 'big' ? 'Сейчас: <b>большая карусель</b>.' : `Сейчас: <b>компактная лента</b>${c2.rail === false ? ' — но лента в этой категории скрыта, позиция не видна на сайте' : ''}.`) +
+      (it.place === 'big' && !it.media ? ' Нет видео/фото — карточка будет с логотипом вместо картинки.' : '') +
+      ((it.place || 'auto') === 'auto' ? ' «Авто»: с видео — в карусель, без видео — в ленту.' : '');
+  };
+  $$('[data-place] button', root).forEach((b) => (b.onclick = () => {
+    it.place = b.dataset.v; dirty = true;
+    $$('[data-place] button', root).forEach((x) => x.classList.toggle('active', x === b));
+    placeHint();
+  }));
+  form.addEventListener('change', (e) => { if (e.target.name === 'cat') placeHint(); });
+  placeHint();
   $$('[data-b]', root).forEach((b) => (b.onclick = () => {
     const k = b.dataset.b;
     it.badges = it.badges.includes(k) ? it.badges.filter((x) => x !== k) : [...it.badges, k];
@@ -687,7 +867,7 @@ function openItemEditor(id, catId) {
     const item = {
       id: it.id, cat: f.cat.value, price: f.price.value, oldPrice: f.oldPrice.value, portion: f.portion.value,
       name: readI18n(root, 'name'), desc: kitchen ? readI18n(root, 'desc') : it.desc, ingr: kitchen ? readI18n(root, 'ingr') : it.ingr,
-      badges: it.badges, media: it.media, steam: kitchen ? f.steam.checked : it.steam, hidden: f.hidden.checked, stop: it.stop, pos: it.pos,
+      badges: it.badges, media: it.media, place: it.place || 'auto', steam: kitchen ? f.steam.checked : it.steam, hidden: f.hidden.checked, stop: it.stop, pos: it.pos,
     };
     if (!['ru', 'en', 'ka'].some((l) => item.name[l])) return toast('Введите название', 'err');
     if (item.price === '' || isNaN(+String(item.price).replace(',', '.'))) return toast('Укажите цену', 'err');
@@ -719,10 +899,15 @@ function openCategoryEditor(id, section) {
       <div class="field"><div class="field-label">Язык</div>${langTabs('cat')}</div>
       ${i18nField('name', 'Название', c.name, { placeholder: isBar ? 'Например: Красное сухое' : 'Например: Салаты' })}
       ${isBar ? `<div class="field"><label>Раздел бара</label><select class="select" name="group">${state.doc.groups.map((g) => `<option value="${g.id}" ${g.id === c.group ? 'selected' : ''}>${esc(nm(g.name))}</option>`).join('')}</select></div>` : `
-      <div class="field"><label>Как показывать</label>
-        <div class="seg" data-display><button type="button" data-v="video" class="${c.display === 'video' ? 'active' : ''}">Видео-карусель</button><button type="button" data-v="compact" class="${c.display === 'compact' ? 'active' : ''}">Компактная лента</button></div>
-        <div class="hint">Компактная лента — для того, что не обязательно снимать: соусы, гарниры, хлеб.</div></div>`}
+      <div class="field"><label>Куда попадают блюда в режиме «Авто»</label>
+        <div class="seg" data-display><button type="button" data-v="video" class="${c.display === 'video' ? 'active' : ''}">С видео — в карусель</button><button type="button" data-v="compact" class="${c.display === 'compact' ? 'active' : ''}">Все — в ленту</button></div>
+        <div class="hint">«С видео — в карусель»: блюда с видео (или вертикальным фото) — в большую карусель, остальные — в компактную ленту. Для отдельного блюда можно выбрать вручную в его карточке.</div></div>
+      ${id ? `<div class="field"><label>Для всех блюд категории сразу</label><div class="btn-row">
+        <button type="button" class="btn small secondary" data-bulk="big">Все — в карусель</button>
+        <button type="button" class="btn small secondary" data-bulk="compact">Все — в ленту</button>
+        <button type="button" class="btn small ghost" data-bulk="auto">Всем «Авто»</button></div></div>` : ''}`}
       <div class="card">
+        ${!isBar ? sw('rail', c.rail !== false, 'Показывать компактную ленту', 'Выключите — лента исчезнет с сайта вместе с её позициями, без пустого места') : ''}
         ${!isBar ? sw('steam', c.steam, 'Пар для новых блюд', 'Включать эффект пара по умолчанию') : ''}
         ${sw('hidden', c.hidden, 'Скрыть категорию с сайта')}
       </div>
@@ -733,10 +918,15 @@ function openCategoryEditor(id, section) {
   wireLangTabs(root);
   let display = c.display;
   $$('[data-display] button', root).forEach((b) => (b.onclick = () => { display = b.dataset.v; $$('[data-display] button', root).forEach((x) => x.classList.toggle('active', x === b)); }));
+  $$('[data-bulk]', root).forEach((b) => (b.onclick = async () => {
+    const labels = { big: 'в большую карусель', compact: 'в компактную ленту', auto: 'в режим «Авто»' };
+    if (!(await confirmBox(`Перевести все блюда категории ${labels[b.dataset.bulk]}?`, 'Перевести', false))) return;
+    try { await doOp({ type: 'items.place', cat: id, place: b.dataset.bulk }); renderView(); } catch (e) { toast(e.message, 'err'); }
+  }));
   $('[data-cancel]', root).onclick = () => L.close();
   $('[data-save]', root).onclick = async () => {
     const f = $('form', root).elements;
-    const cat = { id: c.id, section: c.section, group: isBar ? f.group.value : '', display: isBar ? 'list' : display, steam: !isBar && f.steam.checked, hidden: f.hidden.checked, name: readI18n(root, 'name') };
+    const cat = { id: c.id, section: c.section, group: isBar ? f.group.value : '', display: isBar ? 'list' : display, rail: isBar ? true : f.rail.checked, steam: !isBar && f.steam.checked, hidden: f.hidden.checked, name: readI18n(root, 'name') };
     try { await doOp({ type: 'cat.save', cat }); L.close(); renderView(); } catch (e) { toast(e.message, 'err'); }
   };
   const del = $('[data-del]', root);
@@ -748,20 +938,21 @@ function openCategoryEditor(id, section) {
 
 function openGroupEditor(id) {
   const g = structuredClone(state.doc.groups.find((x) => x.id === id));
-  const artSrc = g.artUrl || (g.art ? `/assets/bar/${g.art}.webp` : '');
+  const artSrc = g.artUrl || '';
+  const artDefault = '<span style="color:#d9c4a0;font-size:12px;text-align:center;padding:8px">Стандартная линейная иконка</span>';
   const html = `
     <div class="sheet-head"><button class="btn ghost" data-cancel>Отмена</button><h2>Раздел бара</h2><button class="btn ghost" data-save style="font-weight:700">Готово</button></div>
     <form class="sheet-body">
       <div class="field"><div class="field-label">Язык</div>${langTabs('grp')}</div>
       ${i18nField('name', 'Название раздела', g.name)}
       <div class="card"><div class="field-label">Иллюстрация</div>
-        <div class="media-box"><div class="media-prev photo" data-art style="background:#3a2828">${artSrc ? `<img src="${esc(artSrc)}" alt="">` : icon('photo')}</div>
+        <div class="media-box"><div class="media-prev photo" data-art style="background:#3a2828">${artSrc ? `<img src="${esc(artSrc)}" alt="">` : artDefault}</div>
         <div class="media-actions">
           <label class="btn secondary">${icon('photo')}Своя иллюстрация<input type="file" accept="image/*" hidden data-artfile></label>
           <button type="button" class="btn ghost" data-artreset ${g.artUrl ? '' : 'hidden'}>Вернуть стандартную</button>
           <div class="progress" hidden><div class="progress-bar"><i></i></div><div class="progress-label"><span data-plabel></span><span data-ppct></span></div></div>
         </div></div>
-        <div class="hint">Лучше всего — PNG с прозрачным фоном или рисунок на тёмно-бордовом фоне, вертикальный.</div>
+        <div class="hint">Необязательно. По умолчанию — тонкая линейная иконка в стиле логотипа. Своя картинка: PNG с прозрачным фоном, светлый рисунок.</div>
       </div>
     </form>`;
   const L = openLayer(html);
@@ -777,7 +968,7 @@ function openGroupEditor(id) {
       prog.hidden = true;
     } catch (er) { prog.hidden = true; toast(er.message, 'err'); }
   };
-  $('[data-artreset]', root).onclick = () => { g.artUrl = ''; $('[data-art]', root).innerHTML = g.art ? `<img src="/assets/bar/${g.art}.webp" alt="">` : ''; $('[data-artreset]', root).hidden = true; };
+  $('[data-artreset]', root).onclick = () => { g.artUrl = ''; $('[data-art]', root).innerHTML = artDefault; $('[data-artreset]', root).hidden = true; };
   $('[data-cancel]', root).onclick = () => L.close();
   $('[data-save]', root).onclick = async () => {
     try { await doOp({ type: 'group.save', group: { id: g.id, name: readI18n(root, 'name'), artUrl: g.artUrl || '' } }); L.close(); renderView(); } catch (e) { toast(e.message, 'err'); }
@@ -910,9 +1101,18 @@ function openSpecialEditor(id, prefill) {
 }
 
 // ───────────────────────── НАСТРОЙКИ ─────────────────────────
+const slider = (name, label, val, min, max) => `<div class="field"><label>${label}<span class="spacer"></span><b data-val="${name}">${Math.round(val * 100)}%</b></label><input type="range" class="range" name="${name}" min="${min}" max="${max}" step="0.05" value="${val}"></div>`;
+function loadFonts(ty) {
+  const fams = [state.fonts.heading[ty.heading]?.q, state.fonts.body[ty.body]?.q].filter(Boolean);
+  if (!fams.length) return;
+  const href = 'https://fonts.googleapis.com/css2?' + fams.map((f) => 'family=' + f).join('&') + '&display=swap';
+  if (document.querySelector(`link[href="${href}"]`)) return;
+  const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; document.head.appendChild(l);
+}
 function renderSettings(v, warn) {
   setTop('Настройки');
   const s = state.doc.settings;
+  const ty = { heading: 'cormorant', body: 'inter', scale: 1, headingScale: 1, logoScale: 1, ...(s.typography || {}) };
   const posterPhotos = state.doc.items.filter((x) => x.media?.type === 'image' && x.media.src.includes('img.postershop.me')).length;
   v.innerHTML = warn + `
     <form id="settings-form" autocomplete="off">
@@ -920,9 +1120,32 @@ function renderSettings(v, warn) {
       <div class="card">
         <div class="field"><div class="field-label">Язык</div>${langTabs('st')}</div>
         ${i18nField('eyebrow', 'Надпись над логотипом', s.eyebrow)}
+        ${i18nField('heroTitle', 'Заголовок под логотипом (необязательно)', s.heroTitle, { placeholder: 'Например: Ресторан грузинской кухни', hint: 'Пусто — показывается только логотип, как сейчас.' })}
         ${i18nField('tagline', 'Слоган', s.tagline)}
+        ${i18nField('heroText', 'Описание заведения (необязательно)', s.heroText, { textarea: true, placeholder: 'Пара предложений о ресторане, этажах, террасе…' })}
         ${i18nField('specialsTitle', 'Заголовок спецпредложений', s.specialsTitle)}
         ${i18nField('address', 'Адрес', s.address)}
+      </div>
+      <div class="group-title">Шрифты и размер текста</div>
+      <div class="card" id="typo">
+        <div class="grid2">
+          <div class="field"><label>Шрифт заголовков</label><select class="select" name="fontHeading">${Object.entries(state.fonts.heading).map(([k, f]) => `<option value="${k}" ${ty.heading === k ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></div>
+          <div class="field"><label>Шрифт текста</label><select class="select" name="fontBody">${Object.entries(state.fonts.body).map(([k, f]) => `<option value="${k}" ${ty.body === k ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}</select></div>
+        </div>
+        ${slider('scale', 'Размер текста', ty.scale, 0.85, 1.3)}
+        ${slider('headingScale', 'Размер заголовков', ty.headingScale, 0.8, 1.3)}
+        ${slider('logoScale', 'Размер логотипа', ty.logoScale, 0.7, 1.6)}
+        <div class="btn-row" style="margin:4px 0 12px">
+          <button type="button" class="btn small secondary" data-typo="std">Как было</button>
+          <button type="button" class="btn small secondary" data-typo="big">Крупнее — легче читать</button>
+        </div>
+        <div class="typo-preview" id="typo-preview">
+          <div class="tp-kicker">01 · Горячие блюда</div>
+          <div class="tp-title">Хачапури по-аджарски</div>
+          <div class="tp-text">Лодочка из теста с сулугуни, яйцом и сливочным маслом · ხაჭაპური</div>
+          <div class="tp-price">23 ₾</div>
+        </div>
+        <div class="hint">Размеры подстраиваются под экран автоматически: на телефоне и компьютере текст не наезжает и не обрезается. Грузинский текст всегда набирается шрифтом Noto Georgian.</div>
       </div>
       <div class="group-title">Контакты</div>
       <div class="card">
@@ -956,6 +1179,29 @@ function renderSettings(v, warn) {
     </div>`;
   const form = $('#settings-form');
   wireLangTabs(form);
+  // живой предпросмотр шрифтов
+  const typo = () => {
+    const f = form.elements;
+    return { heading: f.fontHeading.value, body: f.fontBody.value, scale: +f.scale.value, headingScale: +f.headingScale.value, logoScale: +f.logoScale.value };
+  };
+  const drawTypo = () => {
+    const t = typo();
+    loadFonts(t);
+    const p = $('#typo-preview');
+    p.style.setProperty('--ph', state.fonts.heading[t.heading].css);
+    p.style.setProperty('--pb', state.fonts.body[t.body].css);
+    p.style.setProperty('--fs', t.scale); p.style.setProperty('--fh', t.headingScale);
+    for (const k of ['scale', 'headingScale', 'logoScale']) $(`[data-val="${k}"]`, form).textContent = Math.round(t[k] * 100) + '%';
+  };
+  $('#typo').addEventListener('input', drawTypo);
+  $('#typo').addEventListener('change', drawTypo);
+  $$('[data-typo]', form).forEach((b) => (b.onclick = () => {
+    const f = form.elements;
+    const p = b.dataset.typo === 'big' ? { scale: 1.15, headingScale: 1.1 } : { scale: 1, headingScale: 1, logoScale: 1 };
+    for (const [k, v2] of Object.entries(p)) f[k].value = v2;
+    drawTypo();
+  }));
+  drawTypo();
   let stopMode = s.stoppedMode;
   $$('[data-stopmode] button', form).forEach((b) => (b.onclick = () => { stopMode = b.dataset.v; $$('[data-stopmode] button', form).forEach((x) => x.classList.toggle('active', x === b)); }));
   let hero = s.heroVideo ? { type: 'video', ...s.heroVideo } : null;
@@ -968,7 +1214,8 @@ function renderSettings(v, warn) {
       eyebrow: readI18n(form, 'eyebrow'), tagline: readI18n(form, 'tagline'), specialsTitle: readI18n(form, 'specialsTitle'), address: readI18n(form, 'address'),
       phone: f.phone.value, whatsapp: f.whatsapp.value, instagram: f.instagram.value, hours: f.hours.value,
       stoppedMode: stopMode, defaultLang: f.defaultLang.value,
-      heroVideo: hero ? { src: hero.srcLow || hero.src, poster: hero.poster, blur: hero.blur } : null,
+      heroTitle: readI18n(form, 'heroTitle'), heroText: readI18n(form, 'heroText'), typography: typo(),
+      heroVideo: hero ? { src: hero.srcLow || hero.src, poster: hero.poster, blur: hero.blur, soft: hero.soft === true } : null,
     };
     try { await doOp({ type: 'settings.save', settings }); } catch (er) { toast(er.message, 'err'); }
   };
