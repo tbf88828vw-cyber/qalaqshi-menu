@@ -53,7 +53,7 @@ function placeOf(it) {
   if (it.place === 'big') return 'big';
   if (it.place === 'compact') return 'compact';
   if (c.display === 'compact') return 'compact';
-  return it.media && (it.media.type === 'video' || isPortrait(it.media)) ? 'big' : 'compact';
+  return it.media && it.media.src ? 'big' : 'compact';
 }
 const stopped = (it) => !!it.stop && (!it.stop.until || Date.parse(it.stop.until) > Date.now());
 
@@ -453,7 +453,7 @@ function mediaBlock(m) {
     <div class="hint">Снимайте вертикально (9:16), 5–10 секунд — прямо с iPhone, в любом формате. Видео автоматически превращается в три версии (Full HD, HD и лёгкую), которые играют на всех телефонах. <b>Точка на превью</b> — где блюдо: сайт кадрирует по ней и пускает от неё пар. Сдвинуть — нажмите на блюдо на превью.</div>
   </div>`;
 }
-function wireMedia(root, getMedia, setMedia) {
+function wireMedia(root, getMedia, setMedia, { autosave = null } = {}) {
   const prog = $('.progress', root);
   const setP = (label, p) => {
     prog.hidden = false;
@@ -470,8 +470,12 @@ function wireMedia(root, getMedia, setMedia) {
     try {
       const m = inp.dataset.file === 'video' || file.type.startsWith('video/') ? await uploadVideo(file, setP) : await uploadImage(file, setP);
       setMedia(m); refresh();
-      setP('Готово ✓', 1);
-      setTimeout(() => { prog.hidden = true; }, 1500);
+      if (autosave) {
+        setP('Сохраняем…', 1);
+        try { await autosave(m); setP('Загружено и сохранено ✓', 1); toast('Видео/фото сохранено — уже на сайте', 'ok'); }
+        catch (er) { setP('Загружено ✓ — нажмите «Готово» вверху', 1); }
+      } else setP('Загружено ✓ — нажмите «Готово» вверху, чтобы сохранить', 1);
+      setTimeout(() => { prog.hidden = true; }, 4000);
     } catch (e) {
       console.error(e);
       prog.hidden = true;
@@ -506,38 +510,96 @@ const RENDITIONS = [
   { key: 'srcLow', w: 480, h: 854, bitrate: 1_100_000, label: 'Лёгкая версия для слабого интернета', file: '480' },
 ];
 
-async function uploadVideo(file, setP) {
-  if (!('VideoEncoder' in window)) throw new Error('Этот браузер не умеет сжимать видео. Откройте админку в Safari (iPhone/Mac) или Chrome.');
-  setP('Подготовка…', 0);
-  const mb = await mediabunny();
-  if (!(await mb.canEncodeVideo(CODEC, { width: 720, height: 1280, bitrate: 2_200_000 }))) throw new Error('Браузер не поддерживает кодирование H.264. Используйте Safari или Chrome.');
-  let out;
+/*
+  Надёжная обработка видео. Три способа по очереди — какой первым сработает на этом устройстве:
+   1) WebCodecs напрямую (быстро, Chrome / Safari 16.4+ / Edge);
+   2) через видеоплеер браузера в реальном времени — для HEVC/HDR/Dolby Vision с iPhone и всего,
+      что браузер умеет показать, но WebCodecs не читает;
+   3) запись через MediaRecorder (MP4) — для браузеров без WebCodecs-кодировщика.
+  Тяжёлый исходник (4K, 60 к/с) читается ОДИН раз — в главную версию. Остальные версии делаются уже из неё:
+  так в разы быстрее и телефону хватает памяти.
+*/
+const isWebKit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|CriOS|Edg|OPR|Android/.test(navigator.userAgent) || /iP(hone|ad|od)/.test(navigator.userAgent);
+const log = (...a) => { try { console.warn('[video]', ...a); } catch {} };
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
+let wakeLock = null;
+async function keepAwake(on) {
   try {
-    if (window.__qaForceFallback) throw new Error('test');
-    out = await transcodeDirect(mb, file, setP);
-  } catch (e) {
-    // Видео HDR / Dolby Vision с iPhone и некоторые форматы WebCodecs не читает напрямую —
-    // тогда кадры берём из обычного видеоплеера браузера (он умеет всё, что умеет показывать).
-    console.warn('direct transcode failed, fallback', e);
-    out = await transcodeViaPlayer(mb, file, setP);
+    if (on && 'wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener?.('release', () => { wakeLock = null; }); }
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch {}
+}
+const busyGuard = (e) => { e.preventDefault(); e.returnValue = ''; };
+
+async function canUseEncoder(mb) {
+  if (!('VideoEncoder' in window)) return false;
+  try { return await withTimeout(mb.canEncodeVideo(CODEC, { width: 720, height: 1280, bitrate: 2_800_000 }), 8000, 'timeout'); } catch { return false; }
+}
+function recorderType() {
+  if (window.__qaRecType) return window.__qaRecType;
+  if (!('MediaRecorder' in window) || !HTMLCanvasElement.prototype.captureStream) return null;
+  for (const t of ['video/mp4;codecs=avc1.42E01E', 'video/mp4;codecs=avc1', 'video/mp4']) { try { if (MediaRecorder.isTypeSupported(t)) return t; } catch {} }
+  return null;
+}
+
+async function uploadVideo(file, setP) {
+  if (file.size > 1024 * 1024 * 1024) throw new Error('Файл больше 1 ГБ. Обрежьте видео до 10–15 секунд прямо в «Фото» на iPhone и загрузите снова.');
+  setP('Подготовка…', 0);
+  keepAwake(true);
+  addEventListener('beforeunload', busyGuard);
+  try {
+    const mb = await mediabunny();
+    const enc = await canUseEncoder(mb);
+    const errors = [];
+    let master = null;
+    // Safari (Mac/iPhone): прямое чтение 4K/HEVC через WebCodecs упирается в память («Out of memory»),
+    // а собственный плеер Safari читает любые ролики iPhone экономно — поэтому там он первый.
+    const steps = [];
+    if (enc && !window.__qaForceFallback) steps.push(['direct', masterDirect]);
+    if (enc && !window.__qaForceRecorder) steps[isWebKit ? 'unshift' : 'push'](['playback', masterViaPlayback]);
+    for (const [name, fn] of steps) {
+      if (master) break;
+      try { master = await fn(mb, file, setP); } catch (e) { errors.push(e); log(name + ' failed', e); if (e && e.userFacing && name === 'direct') break; }
+    }
+    if (!master && recorderType()) {
+      try { master = await masterViaRecorder(file, setP); } catch (e) { errors.push(e); log('recorder failed', e); }
+    }
+    if (!master) {
+      const known = errors.find((e) => e && e.userFacing);
+      if (known) throw known;
+      if (!enc && !recorderType()) throw new Error('Этот браузер не умеет сжимать видео. Откройте админку в Safari (iPhone/Mac) или Chrome последней версии.');
+      throw new Error('Не удалось обработать это видео (' + (errors.at(-1)?.message || 'неизвестная ошибка') + '). Попробуйте ещё раз или загрузите с другого устройства.');
+    }
+
+    // остальные версии — из главной (H.264, читается везде, быстро)
+    const out = { dur: master.dur, [master.key]: master.blob };
+    if (enc) {
+      const rest = master.sizes.slice(1);
+      for (const [i, r] of rest.entries()) {
+        try { out[r.key] = await convertRendition(mb, master.blob, r, (p) => setP(`${r.label}…`, 0.55 + ((i + p) / rest.length) * 0.15)); } catch (e) { log('rendition failed', r.key, e); }
+      }
+    }
+    if (!out.src) { out.src = out.srcHi || out.srcLow; delete out.srcHi; }
+
+    setP('Обложка и поиск блюда в кадре…', 0.72);
+    const { poster, blur, focus } = await posterFor(mb, master.blob, enc);
+    const base = 'media/' + slug(file.name) + '-' + Date.now().toString(36);
+    const files = [];
+    for (const r of RENDITIONS) if (out[r.key]) files.push([out[r.key], base + '-' + r.file + '.mp4', 'video/mp4', r.key]);
+    files.push([poster, base + '-poster.' + (poster.type === 'image/webp' ? 'webp' : 'jpg'), poster.type, 'poster']);
+    const total = files.reduce((s, f) => s + f[0].size, 0);
+    let doneBytes = 0;
+    const media = { type: 'video', blur, w: 720, h: 1280, dur: out.dur, focus, bytes: {} };
+    for (const [blob, path, type, key] of files) {
+      media[key] = await putFile(blob, path, type, (loaded) => setP(`Загрузка ${fmtMB(doneBytes + loaded)} из ${fmtMB(total)}…`, 0.74 + ((doneBytes + loaded) / total) * 0.26));
+      if (key !== 'poster') media.bytes[key] = blob.size;
+      doneBytes += blob.size;
+    }
+    return media;
+  } finally {
+    removeEventListener('beforeunload', busyGuard);
+    keepAwake(false);
   }
-  // если исходник меньше 720p — основной версией становится самая большая из получившихся
-  if (!out.src) { out.src = out.srcHi || out.srcLow; delete out.srcHi; }
-  setP('Обложка и поиск блюда в кадре…', 0.72);
-  const { poster, blur, focus, w, h } = await posterFromVideo(out.srcHi || out.src);
-  const base = 'media/' + slug(file.name) + '-' + Date.now().toString(36);
-  const files = [];
-  for (const r of RENDITIONS) if (out[r.key]) files.push([out[r.key], base + '-' + r.file + '.mp4', 'video/mp4', r.key]);
-  files.push([poster, base + '-poster.' + (poster.type === 'image/webp' ? 'webp' : 'jpg'), poster.type, 'poster']);
-  const total = files.reduce((s, f) => s + f[0].size, 0);
-  let doneBytes = 0;
-  const media = { type: 'video', blur, w: 720, h: 1280, dur: out.dur, focus, bytes: {} };
-  for (const [blob, path, type, key] of files) {
-    media[key] = await putFile(blob, path, type, (loaded) => setP(`Загрузка ${fmtMB(doneBytes + loaded)} из ${fmtMB(total)}…`, 0.74 + ((doneBytes + loaded) / total) * 0.26));
-    if (key !== 'poster') media.bytes[key] = blob.size;
-    doneBytes += blob.size;
-  }
-  return media;
 }
 
 function cropFor(dw, dh) {
@@ -548,104 +610,190 @@ function cropFor(dw, dh) {
   cw -= cw % 2; ch -= ch % 2;
   return { left: Math.round((dw - cw) / 2), top: Math.round((dh - ch) / 2), width: cw, height: ch };
 }
-function sizesFor(crop) {
+function sizesFor(crop, maxW = 1080) {
   // не растягиваем маленькие исходники и не делаем одинаковые копии
   const seen = new Set();
-  return RENDITIONS.map((r) => {
+  return RENDITIONS.filter((r) => r.w <= maxW).map((r) => {
     const w = Math.min(r.w, crop.width - (crop.width % 2));
     return { ...r, w, h: Math.round((w / 9) * 16 / 2) * 2 };
   }).filter((r) => { if (seen.has(r.w) || (r.key === 'srcHi' && r.w < 900)) return false; seen.add(r.w); return true; });
 }
 
-async function transcodeDirect(mb, file, setP) {
-  const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, Quality } = mb;
-  const probe = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-  const vt = await probe.getPrimaryVideoTrack();
-  if (!vt) throw new Error('В файле нет видео');
-  if (!(await vt.canDecode())) throw new Error('cannot decode');
-  const crop = cropFor(await vt.getDisplayWidth(), await vt.getDisplayHeight());
-  const end = Math.min(await probe.computeDuration(), MAX_SECONDS);
-  const sizes = sizesFor(crop);
-  const out = { dur: Math.round(end * 10) / 10 };
-  for (const [ri, r] of sizes.entries()) {
-    const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
-    const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
-    const conv = await Conversion.init({
-      input, output,
-      trim: { start: 0, end },
-      video: { crop, width: r.w, height: r.h, fit: 'fill', frameRate: 30, codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2, forceTranscode: true },
-      audio: { discard: true },
-    });
-    if (!conv.isValid) throw new Error('invalid conversion');
-    conv.onProgress = (p) => setP(`${r.label}…`, (ri + p) / sizes.length * 0.7);
-    await conv.execute();
-    out[r.key] = new Blob([output.target.buffer], { type: 'video/mp4' });
-  }
-  return out;
+/** Conversion с «сторожем»: если прогресс замер на 45 с — отменяем и пробуем другой способ. */
+async function runConversion(conv, onP) {
+  let last = Date.now(), stalled = false;
+  conv.onProgress = (p) => { last = Date.now(); onP && onP(p); };
+  const iv = setInterval(() => { if (Date.now() - last > 45000) { stalled = true; clearInterval(iv); try { conv.cancel(); } catch {} } }, 3000);
+  try { await conv.execute(); } catch (e) { throw stalled ? new Error('обработка зависла') : e; } finally { clearInterval(iv); }
 }
 
-async function transcodeViaPlayer(mb, file, setP) {
-  const { Output, BufferTarget, Mp4OutputFormat, CanvasSource, Quality } = mb;
+async function masterDirect(mb, file, setP) {
+  const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, Quality } = mb;
+  const input = new Input({ source: new BlobSource(file), formats: ALL_FORMATS });
+  const vt = await withTimeout(input.getPrimaryVideoTrack(), 20000, 'файл не читается');
+  if (!vt) throw Object.assign(new Error('В файле нет видео. Выберите видеофайл.'), { userFacing: true });
+  if (!(await vt.canDecode())) throw new Error('кодек не поддерживается WebCodecs');
+  const crop = cropFor(await vt.getDisplayWidth(), await vt.getDisplayHeight());
+  const end = Math.min(await input.computeDuration(), MAX_SECONDS);
+  const sizes = sizesFor(crop);
+  const r = sizes[0];
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+  const conv = await Conversion.init({
+    input, output,
+    trim: { start: 0, end },
+    video: { crop, width: r.w, height: r.h, fit: 'fill', frameRate: 30, codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2, forceTranscode: true },
+    audio: { discard: true },
+  });
+  if (!conv.isValid) throw new Error('конвертация невозможна');
+  await runConversion(conv, (p) => setP('Сжимаем видео…', p * 0.55));
+  const blob = new Blob([output.target.buffer], { type: 'video/mp4' });
+  if (blob.size < 2000) throw new Error('пустой результат');
+  return { blob, key: r.key, sizes, dur: Math.round(end * 10) / 10 };
+}
+
+async function convertRendition(mb, masterBlob, r, onP) {
+  const { Input, Output, Conversion, BlobSource, BufferTarget, Mp4OutputFormat, ALL_FORMATS, Quality } = mb;
+  const input = new Input({ source: new BlobSource(masterBlob), formats: ALL_FORMATS });
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+  const conv = await Conversion.init({
+    input, output,
+    video: { width: r.w, height: r.h, fit: 'fill', frameRate: 30, codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2, forceTranscode: true },
+    audio: { discard: true },
+  });
+  if (!conv.isValid) throw new Error('конвертация невозможна');
+  await runConversion(conv, onP);
+  return new Blob([output.target.buffer], { type: 'video/mp4' });
+}
+
+/** Открывает видео в скрытом плеере. На iPhone плеер не грузит файл без play(), поэтому «подталкиваем». */
+async function openPlayer(file) {
   const url = URL.createObjectURL(file);
   const v = document.createElement('video');
-  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  v.muted = true; v.defaultMuted = true; v.playsInline = true; v.setAttribute('playsinline', ''); v.setAttribute('muted', '');
+  v.preload = 'auto'; v.crossOrigin = 'anonymous';
+  v.style.cssText = 'position:fixed;left:0;top:0;width:4px;height:4px;opacity:.01;pointer-events:none;z-index:-1';
+  document.body.appendChild(v);
+  v.src = url;
+  const close = () => { try { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); } catch {} URL.revokeObjectURL(url); };
   try {
-    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('Браузер не может открыть это видео. Попробуйте другой файл или снимите в формате «Наиболее совместимый» (Настройки → Камера → Форматы).')); setTimeout(() => rej(new Error('Видео не открывается')), 20000); });
-    const crop = cropFor(v.videoWidth, v.videoHeight);
-    const end = Math.min(v.duration || MAX_SECONDS, MAX_SECONDS);
-    const sizes = sizesFor(crop);
-    const tracks = [];
-    for (const r of sizes) {
-      const c = document.createElement('canvas'); c.width = r.w; c.height = r.h;
-      const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
-      const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
-      const source = new CanvasSource(c, { codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2 });
-      output.addVideoTrack(source, { frameRate: 30 });
-      await output.start();
-      tracks.push({ r, ctx, output, source });
-    }
-    const fps = 30, step = 1 / fps, frames = Math.floor(end * fps);
-    const seek = (t) => new Promise((res) => {
-      const done = () => { v.removeEventListener('seeked', done); res(); };
-      v.addEventListener('seeked', done);
-      v.currentTime = t;
-      setTimeout(done, 1500);
-    });
-    for (let i = 0; i < frames; i++) {
-      const t = i * step;
-      await seek(Math.min(t + 0.001, v.duration - 0.01));
-      for (const k of tracks) {
-        k.ctx.drawImage(v, crop.left, crop.top, crop.width, crop.height, 0, 0, k.r.w, k.r.h);
-        await k.source.add(t, step);
-      }
-      if (i % 5 === 0) setP('Сжимаем видео…', (i / frames) * 0.7);
-    }
-    const out = { dur: Math.round(end * 10) / 10 };
-    for (const k of tracks) {
-      k.source.close();
-      await k.output.finalize();
-      out[k.r.key] = new Blob([k.output.target.buffer], { type: 'video/mp4' });
-    }
-    return out;
-  } finally {
-    v.removeAttribute('src'); v.load();
-    URL.revokeObjectURL(url);
-  }
+    await withTimeout(new Promise((res, rej) => {
+      if (v.readyState >= 2) return res();
+      v.addEventListener('loadeddata', res, { once: true });
+      v.addEventListener('error', () => rej(Object.assign(new Error('Браузер не может открыть это видео. На iPhone: Настройки → Камера → Форматы → «Наиболее совместимый», затем снимите заново.'), { userFacing: true })), { once: true });
+      v.play().then(() => v.pause()).catch(() => {});
+    }), 25000, 'Видео не открывается');
+    v.pause();
+    if (!v.videoWidth) throw new Error('нет изображения');
+    return { v, close };
+  } catch (e) { close(); throw e; }
 }
 
-async function posterFromVideo(blob) {
-  const v = document.createElement('video');
-  v.muted = true; v.playsInline = true; v.preload = 'auto';
-  const url = URL.createObjectURL(blob);
-  v.src = url;
-  await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('Не удалось прочитать видео')); });
-  v.currentTime = 0.001;
-  await new Promise((res) => { v.onseeked = res; setTimeout(res, 800); });
-  const poster = await canvasBlob(v, 450, 800, 0.72);
-  const blur = await tinyBlur(v);
-  const focus = detectFocus(v);
-  URL.revokeObjectURL(url);
-  return { poster, blur, focus };
+/** Кадры из плеера в реальном времени (requestVideoFrameCallback) → H.264 через WebCodecs. */
+async function masterViaPlayback(mb, file, setP) {
+  const { Output, BufferTarget, Mp4OutputFormat, CanvasSource, Quality } = mb;
+  const { v, close } = await openPlayer(file);
+  try {
+    const crop = cropFor(v.videoWidth, v.videoHeight);
+    const end = Math.min(isFinite(v.duration) && v.duration > 0 ? v.duration : MAX_SECONDS, MAX_SECONDS);
+    const sizes = sizesFor(crop);
+    const r = sizes[0];
+    const c = document.createElement('canvas'); c.width = r.w; c.height = r.h;
+    const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+    const source = new CanvasSource(c, { codec: CODEC, quality: new Quality({ bitrate: r.bitrate }), keyFrameInterval: 2 });
+    output.addVideoTrack(source, { frameRate: 30 });
+    await output.start();
+    let lastT = -1, busy = false, frames = 0, pending = Promise.resolve();
+    const grab = (t) => {
+      if (busy || t < lastT + 1 / 30 - 0.006 || t > end) return;
+      busy = true; lastT = t;
+      ctx.drawImage(v, crop.left, crop.top, crop.width, crop.height, 0, 0, r.w, r.h);
+      pending = source.add(Math.max(0, t), 1 / 30).then(() => { frames++; busy = false; }, (e) => { busy = false; throw e; });
+      setP('Сжимаем видео…', Math.min(1, t / end) * 0.55);
+    };
+    v.currentTime = 0;
+    await new Promise((res) => { v.onseeked = res; setTimeout(res, 1500); });
+    await withTimeout(new Promise((res, rej) => {
+      const hasRVFC = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+      const finish = () => { v.pause(); res(); };
+      v.onended = finish;
+      v.onerror = () => rej(new Error('ошибка воспроизведения'));
+      if (hasRVFC) {
+        const loop = (_now, meta) => { grab(meta.mediaTime); if (meta.mediaTime >= end || v.ended) return finish(); v.requestVideoFrameCallback(loop); };
+        v.requestVideoFrameCallback(loop);
+      } else {
+        const tick = () => { if (v.ended || v.currentTime >= end) return finish(); grab(v.currentTime); requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      }
+      v.play().catch(rej);
+    }), (end + 40) * 1000, 'воспроизведение зависло');
+    await pending;
+    if (frames < 10) throw new Error('слишком мало кадров');
+    source.close();
+    await output.finalize();
+    return { blob: new Blob([output.target.buffer], { type: 'video/mp4' }), key: r.key, sizes, dur: Math.round(end * 10) / 10 };
+  } finally { close(); }
+}
+
+/** Последний вариант: запись canvas через MediaRecorder в MP4 (720p, реальное время). */
+async function masterViaRecorder(file, setP) {
+  const type = recorderType();
+  const { v, close } = await openPlayer(file);
+  try {
+    const crop = cropFor(v.videoWidth, v.videoHeight);
+    const end = Math.min(isFinite(v.duration) && v.duration > 0 ? v.duration : MAX_SECONDS, MAX_SECONDS);
+    const sizes = sizesFor(crop, 720);
+    const r = sizes[0];
+    const c = document.createElement('canvas'); c.width = r.w; c.height = r.h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(v, crop.left, crop.top, crop.width, crop.height, 0, 0, r.w, r.h);
+    const stream = c.captureStream(30);
+    const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 3_500_000 });
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+    const stopped = new Promise((res) => (rec.onstop = res));
+    v.currentTime = 0;
+    await new Promise((res) => { v.onseeked = res; setTimeout(res, 1500); });
+    rec.start(1000);
+    await withTimeout(new Promise((res, rej) => {
+      const tick = () => {
+        ctx.drawImage(v, crop.left, crop.top, crop.width, crop.height, 0, 0, r.w, r.h);
+        setP('Сжимаем видео…', Math.min(1, v.currentTime / end) * 0.6);
+        if (v.ended || v.currentTime >= end) { v.pause(); return res(); }
+        requestAnimationFrame(tick);
+      };
+      v.onended = () => res();
+      v.play().then(() => requestAnimationFrame(tick), rej);
+    }), (end + 40) * 1000, 'запись зависла');
+    rec.stop(); stream.getTracks().forEach((t) => t.stop());
+    await stopped;
+    const blob = new Blob(chunks, { type: window.__qaRecType ? 'video/webm' : 'video/mp4' });
+    if (blob.size < 2000) throw new Error('пустая запись');
+    return { blob, key: r.key, sizes: [r], dur: Math.round(end * 10) / 10 };
+  } finally { close(); }
+}
+
+/** Обложка, размытое превью и «где блюдо» — из готового видео. */
+async function posterFor(mb, blob, enc) {
+  if (enc) {
+    try {
+      const { Input, BlobSource, ALL_FORMATS, CanvasSink } = mb;
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+      const vt = await input.getPrimaryVideoTrack();
+      const sink = new CanvasSink(vt, { poolSize: 1 });
+      const fr = await withTimeout(sink.getCanvas(0.05), 15000, 'timeout');
+      if (fr && fr.canvas) {
+        const cv = fr.canvas;
+        return { poster: await canvasBlob(cv, 450, 800, 0.72), blur: await tinyBlur(cv), focus: detectFocus(cv) };
+      }
+    } catch (e) { log('poster via sink failed', e); }
+  }
+  const { v, close } = await openPlayer(blob);
+  try {
+    v.currentTime = 0.05;
+    await new Promise((res) => { v.onseeked = res; setTimeout(res, 1200); });
+    return { poster: await canvasBlob(v, 450, 800, 0.72), blur: await tinyBlur(v), focus: detectFocus(v) };
+  } finally { close(); }
 }
 
 async function uploadImage(fileOrBlob, setP, { maxSide = 1600, name = 'photo' } = {}) {
@@ -834,14 +982,14 @@ function openItemEditor(id, catId) {
   const form = $('form', root);
   wireLangTabs(root);
   form.addEventListener('input', () => { dirty = true; });
-  if (kitchen) wireMedia(root, () => it.media, (m) => { it.media = m; dirty = true; placeHint(); });
+  if (kitchen) wireMedia(root, () => it.media, (m) => { it.media = m; dirty = true; placeHint(); }, { autosave: id ? (m) => doOp({ type: 'items.media', map: { [id]: m } }, { quiet: true }) : null });
   const placeHint = () => {
     const el = $('[data-place-hint]', root); if (!el) return;
     const c2 = catById($('form', root).elements.cat.value) || cat;
     const where = placeOf({ ...it, cat: c2.id });
     el.innerHTML = (where === 'big' ? 'Сейчас: <b>большая карусель</b>.' : `Сейчас: <b>компактная лента</b>${c2.rail === false ? ' — но лента в этой категории скрыта, позиция не видна на сайте' : ''}.`) +
       (it.place === 'big' && !it.media ? ' Нет видео/фото — карточка будет с логотипом вместо картинки.' : '') +
-      ((it.place || 'auto') === 'auto' ? ' «Авто»: с видео — в карусель, без видео — в ленту.' : '');
+      ((it.place || 'auto') === 'auto' ? ' «Авто»: с фото или видео — в карусель, без фото — в ленту.' : '');
   };
   $$('[data-place] button', root).forEach((b) => (b.onclick = () => {
     it.place = b.dataset.v; dirty = true;
@@ -900,8 +1048,8 @@ function openCategoryEditor(id, section) {
       ${i18nField('name', 'Название', c.name, { placeholder: isBar ? 'Например: Красное сухое' : 'Например: Салаты' })}
       ${isBar ? `<div class="field"><label>Раздел бара</label><select class="select" name="group">${state.doc.groups.map((g) => `<option value="${g.id}" ${g.id === c.group ? 'selected' : ''}>${esc(nm(g.name))}</option>`).join('')}</select></div>` : `
       <div class="field"><label>Куда попадают блюда в режиме «Авто»</label>
-        <div class="seg" data-display><button type="button" data-v="video" class="${c.display === 'video' ? 'active' : ''}">С видео — в карусель</button><button type="button" data-v="compact" class="${c.display === 'compact' ? 'active' : ''}">Все — в ленту</button></div>
-        <div class="hint">«С видео — в карусель»: блюда с видео (или вертикальным фото) — в большую карусель, остальные — в компактную ленту. Для отдельного блюда можно выбрать вручную в его карточке.</div></div>
+        <div class="seg" data-display><button type="button" data-v="video" class="${c.display === 'video' ? 'active' : ''}">С фото/видео — в карусель</button><button type="button" data-v="compact" class="${c.display === 'compact' ? 'active' : ''}">Все — в ленту</button></div>
+        <div class="hint">«С фото/видео — в карусель»: блюда с видео или фото — в большую карусель, без фото — в компактную ленту. Для отдельного блюда можно выбрать вручную в его карточке.</div></div>
       ${id ? `<div class="field"><label>Для всех блюд категории сразу</label><div class="btn-row">
         <button type="button" class="btn small secondary" data-bulk="big">Все — в карусель</button>
         <button type="button" class="btn small secondary" data-bulk="compact">Все — в ленту</button>

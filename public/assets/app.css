@@ -36,40 +36,54 @@
   --card-shadow: 0 40px 100px rgba(0, 0, 0, .7), 0 0 0 1px rgba(201, 185, 154, .14);
   --mini-shadow: none;
   --hero-filter: brightness(.24) saturate(.75);
-  --hero-soft-filter: brightness(.3) saturate(.8);
-  --vignette-mid: rgba(7, 6, 10, .5); --vignette-edge: rgba(7, 6, 10, .92);
+  --hero-soft-filter: brightness(.46) saturate(.95);
+  --vignette-mid: rgba(7, 6, 10, .38); --vignette-edge: rgba(7, 6, 10, .9);
   --gold: #e9c77b;
   color-scheme: dark;
 }
 
-/* ── СВЕТЛАЯ ТЕМА (палитра в духе apple.com) ── */
+/* ── СВЕТЛАЯ ТЕМА: та же тёмная, но «днём» — тёплая слоновая кость, эспрессо и бронза ── */
 [data-theme="light"] {
-  --bg: #f5f5f7;
-  --bg-elev: #ffffff;
-  --surface: #ffffff;
-  --surface-2: #fbfbfd;
-  --text: #1d1d1f;
-  --muted: #6e6e73;
-  --dim: rgba(29, 29, 31, .16);
-  --line: rgba(0, 0, 0, .08);
-  --accent: #8a6a46;
-  --accent-strong: #1d1d1f;
-  --logo: #3a2c24;
-  --wm: #ffffff; --wm-op: 1;
-  --header-bg: rgba(245, 245, 247, .8);
-  --pill-bg: #1d1d1f; --pill-fg: #ffffff;
-  --card-bg: #e8e6e3;
-  --card-shadow: 0 24px 60px rgba(0, 0, 0, .18), 0 2px 8px rgba(0, 0, 0, .06);
-  --mini-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 24px rgba(0, 0, 0, .06);
-  --hero-filter: brightness(1.08) saturate(.85) opacity(.45);
-  --hero-soft-filter: brightness(1.1) saturate(.85) opacity(.5);
-  --vignette-mid: rgba(245, 245, 247, .55); --vignette-edge: rgba(245, 245, 247, .96);
-  --gold: #a87b22;
+  --bg: #f3ede4;
+  --bg-elev: #faf6f0;
+  --surface: rgba(255, 252, 247, .78);
+  --surface-2: rgba(255, 252, 247, .5);
+  --text: #2a1f1a;
+  --muted: rgba(42, 31, 26, .58);
+  --dim: rgba(42, 31, 26, .16);
+  --line: rgba(120, 90, 60, .18);
+  --accent: #97774f;
+  --accent-strong: #2a1f1a;
+  --logo: #3a2828;
+  --wm: #ffffff; --wm-op: .75;
+  --header-bg: rgba(243, 237, 228, .8);
+  --pill-bg: #3a2828; --pill-fg: #f3e8d8;
+  --card-bg: #d9cfc2;
+  --card-shadow: 0 34px 70px rgba(74, 48, 30, .26), 0 0 0 1px rgba(120, 90, 60, .14);
+  --mini-shadow: 0 1px 2px rgba(74, 48, 30, .05), 0 10px 26px rgba(74, 48, 30, .07);
+  --hero-filter: brightness(1.02) saturate(.8) opacity(.5);
+  --hero-soft-filter: brightness(1.06) saturate(.9) opacity(.78);
+  --vignette-mid: rgba(243, 237, 228, .32); --vignette-edge: rgba(243, 237, 228, .94);
+  --gold: #a4782a;
   color-scheme: light;
 }
-html.theme-anim, html.theme-anim body, html.theme-anim #site-header, html.theme-anim .cat-nav, html.theme-anim .mini, html.theme-anim .site-footer {
-  transition: background-color .45s ease, color .45s ease, border-color .45s ease, box-shadow .45s ease !important;
-}
+[data-theme="light"] .bar-btn { background: #3a2828; border-color: #3a2828; color: #f3e8d8; }
+[data-theme="light"] .lang-switcher, [data-theme="light"] .theme-btn { background: rgba(255, 252, 247, .7); }
+[data-theme="light"] .mini { background: #fbf8f3; }
+[data-theme="light"] .dish-card { opacity: .8; }
+[data-theme="light"] .section-title { font-weight: 400; }
+[data-theme="light"] .hero-title, [data-theme="light"] .sheet-title { color: #2a1f1a; }
+[data-theme="light"] .dish-sheet-backdrop { background: rgba(58, 40, 40, .35); }
+[data-theme="light"] .footer-logo { opacity: .7; }
+
+/* ── ПЛАВНАЯ СМЕНА ТЕМЫ ──
+   Где браузер умеет View Transitions (Chrome, Safari 18+), новая тема «раскрывается» кругом от кнопки.
+   Иначе — мягкое затухание всей страницы, без мигания отдельных элементов. */
+::view-transition-old(root), ::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-new(root) { animation: themeReveal .75s cubic-bezier(.65, 0, .35, 1) both; }
+@keyframes themeReveal { from { clip-path: circle(0 at var(--tx, 90%) var(--ty, 4%)); } to { clip-path: circle(var(--tr, 150vmax) at var(--tx, 90%) var(--ty, 4%)); } }
+html.theme-fade body { opacity: 0; transition: opacity .22s ease; }
+html.theme-fade-in body { transition: opacity .35s ease; }
 
 html { background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 html.lock, html.lock body { overflow: hidden; }
@@ -295,7 +309,6 @@ a { color: inherit; -webkit-tap-highlight-color: transparent; }
   cursor: pointer; isolation: isolate; -webkit-tap-highlight-color: transparent;
   contain: layout paint;
 }
-[data-theme="light"] .dish-card { opacity: .85; }
 .dish-card.card-active { transform: none; opacity: 1; box-shadow: var(--card-shadow); }
 @media (hover: hover) { .dish-card:not(.card-active):hover { transform: scale(.97); opacity: .9; } }
 .card-media { position: absolute; inset: 0; background-size: cover; background-position: center; background-color: #1a1412; }

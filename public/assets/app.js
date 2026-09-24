@@ -83,12 +83,36 @@
 
   // ─────────────────────────── ТЕМА ───────────────────────────
   const theme = () => (root.dataset.theme === 'light' ? 'light' : 'dark');
-  function setTheme(v, animate) {
-    if (animate) { root.classList.add('theme-anim'); clearTimeout(setTheme.tm); setTheme.tm = setTimeout(() => root.classList.remove('theme-anim'), 600); }
+  function applyTheme(v) {
     root.dataset.theme = v;
     ls.set('qa_theme', v);
-    const m = $('#meta-theme'); if (m) m.content = v === 'light' ? '#f5f5f7' : '#07060a';
+    const m = $('#meta-theme'); if (m) m.content = v === 'light' ? '#f3ede4' : '#07060a';
     applyTexts();
+  }
+  let themeBusy = false;
+  function setTheme(v, animate, from) {
+    if (!animate || themeBusy || matchMedia('(prefers-reduced-motion: reduce)').matches) { applyTheme(v); return; }
+    themeBusy = true;
+    const done = () => { themeBusy = false; };
+    if (document.startViewTransition) {
+      // круг раскрывается от кнопки темы
+      const r = from ? from.getBoundingClientRect() : { left: innerWidth - 60, top: 20, width: 36, height: 36 };
+      const x = r.left + r.width / 2, y = r.top + r.height / 2;
+      const rad = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 20;
+      root.style.setProperty('--tx', x + 'px'); root.style.setProperty('--ty', y + 'px'); root.style.setProperty('--tr', rad + 'px');
+      try {
+        const vt = document.startViewTransition(() => applyTheme(v));
+        vt.finished.then(done, done);
+      } catch { applyTheme(v); done(); }
+      return;
+    }
+    // запасной вариант: мягкое затухание страницы
+    root.classList.add('theme-fade');
+    setTimeout(() => {
+      applyTheme(v);
+      root.classList.remove('theme-fade'); root.classList.add('theme-fade-in');
+      setTimeout(() => { root.classList.remove('theme-fade-in'); done(); }, 380);
+    }, 230);
   }
 
   // ─────────────────────────── ФОРМАТЫ ───────────────────────────
@@ -125,7 +149,7 @@
     if (it.place === 'big') return true;
     if (it.place === 'compact') return false;
     if (cat && cat.display === 'compact') return false;
-    return !!(it.media && (it.media.type === 'video' || isPortraitPhoto(it.media)));
+    return !!(it.media && it.media.src);
   }
 
   // ─────────────────────────── СЕТЬ И КАЧЕСТВО ВИДЕО ───────────────────────────
@@ -866,7 +890,7 @@
     lang = b.dataset.lang; ls.set('qa_lang', lang);
     applyTexts();
   }));
-  $('#theme-btn').addEventListener('click', () => setTheme(theme() === 'dark' ? 'light' : 'dark', true));
+  $('#theme-btn').addEventListener('click', (e) => setTheme(theme() === 'dark' ? 'light' : 'dark', true, e.currentTarget));
   $('.scroll-invite').addEventListener('click', (e) => { e.preventDefault(); if (sections[0]) scrollToSection(sections[0].sec); });
   addEventListener('scroll', onScroll, { passive: true });
 
